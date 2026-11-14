@@ -1,53 +1,55 @@
 # zenoh-c linkstatic reproduction (BCR PR #11768)
 
-https://github.com/bazelbuild/bazel-central-registry/pull/11768 の before / after 比較。
-検証した PR head: `c49a79039afeae19bf97166cc8c6d2f2a2865c12`
-(`after/.bazelrc` はブランチ名で参照しているので、ブランチが進むと内容も変わる)
+A before/after comparison for https://github.com/bazelbuild/bazel-central-registry/pull/11768.
+Tested at PR head `c49a79039afeae19bf97166cc8c6d2f2a2865c12`. `after/.bazelrc` points at the
+branch name, so its content changes whenever the branch moves.
 
-| dir       | zenoh-c        | registry                                                       |
-|-----------|----------------|----------------------------------------------------------------|
-| `before/` | `1.10.1`       | BCR のみ                                                       |
-| `after/`  | `1.10.1.bcr.1` | PR ブランチ (`asymingt/fix-zenoh-dynamic-linking`) → BCR の順  |
+| dir       | zenoh-c        | registry                                                         |
+|-----------|----------------|------------------------------------------------------------------|
+| `before/` | `1.10.1`       | BCR only                                                         |
+| `after/`  | `1.10.1.bcr.1` | PR branch (`asymingt/fix-zenoh-dynamic-linking`), then BCR       |
 
-2つのディレクトリの差分は zenoh-c のバージョンと registry だけ
-(`diff -r -x 'bazel-*' -x MODULE.bazel.lock before after`)。
-検証したのは 1.10.1 → 1.10.1.bcr.1 の組だけで、1.8.0 系の `select()` 方式は試していない。
-consumer 側の MODULE.bazel は zenoh-c の `overlay/tests/MODULE.bazel` と同じ構成
-(zenoh-c は Rust / LLVM toolchain を `dev_dependency` で登録するので root で登録が必要)。
-Bazel は `.bazelversion` で 9.3.2 に固定。
+The two directories differ only in the zenoh-c version and the registry. To see the difference:
+`diff -r -x 'bazel-*' -x MODULE.bazel.lock before after`.
+Only the 1.10.1 → 1.10.1.bcr.1 pair was tested; the 1.8.0.x `select()` approach was not.
+The consumer `MODULE.bazel` is set up like zenoh-c's `overlay/tests/MODULE.bazel`. zenoh-c
+registers its Rust and LLVM toolchains as `dev_dependency`, so the root module has to register
+them itself.
+`.bazelversion` pins Bazel to 9.3.2.
 
-## ターゲット (両ディレクトリ共通の `BUILD.bazel`)
+## Targets (same `BUILD.bazel` in both directories)
 
-すべて `@zenoh-c//:zenoh-c` に依存し、`z_config_default()` を実際に呼ぶ
-(呼ばないと `.a` から何も取り込まれず、比較の意味がなくなるため)。
+Every target depends on `@zenoh-c//:zenoh-c` and calls `z_config_default()`. Without a call,
+nothing would be pulled from the `.a`, and the comparison would prove nothing.
 
-| target               | 種類                           | linkstatic       |
-|----------------------|--------------------------------|------------------|
-| `cc_bin`             | `cc_binary`                    | True (default)   |
-| `cc_test_linkstatic` | `cc_test` (PR タイトルのケース) | True             |
-| `cc_test_default`    | `cc_test` (対照)               | False (default)  |
-| `go_bin`             | `go_binary` + `cgo` + `cdeps`  | Go linker は常に static |
+| target               | kind                              | linkstatic                 |
+|----------------------|-----------------------------------|----------------------------|
+| `cc_bin`             | `cc_binary`                       | True (default)             |
+| `cc_test_linkstatic` | `cc_test` (the case in the PR title) | True                    |
+| `cc_test_default`    | `cc_test` (control)               | False (default)            |
+| `go_bin`             | `go_binary` + `cgo` + `cdeps`     | the Go linker always links cdeps statically |
 
-## コマンド (repo root で実行)
+## Commands (run from the repo root)
 
 ```sh
-diff -r -x 'bazel-*' -x MODULE.bazel.lock before after   # 差分は version と registry だけ
+diff -r -x 'bazel-*' -x MODULE.bazel.lock before after   # only the version and registry differ
 
-./compare.sh                        # @llvm hermetic toolchain (PR の test module と同じ)
-./compare.sh --local-cc             # 自動検出のホスト toolchain (この環境では /usr/bin/gcc)
-./compare.sh --dynamic_mode=off     # 任意: 追加フラグはそのまま bazel に渡る
+./compare.sh                        # @llvm hermetic toolchain (same as the PR's test module)
+./compare.sh --local-cc             # auto-detected host toolchain (/usr/bin/gcc here)
+./compare.sh --dynamic_mode=off     # optional: other flags are passed to bazel as-is
 ```
 
-`compare.sh` は両ディレクトリで build し、各ターゲットについて次を表示する。
-- `readelf -d` の `NEEDED` のうち zenohc を含むもの
-- `nm` で見た `z_config_default` (`T` ならバイナリ内に定義、`U` なら .so から解決。
-  rules_go が `.symtab` を strip したバイナリでは `.dynsym` しか見えないので、static だと
-  `(stripped, not imported)` と表示される)
-- バイナリサイズ
-- `bazel aquery` (CppLink / GoLink) のリンクコマンドに渡された zenohc の `.a` / `.so`
-- バイナリを bazel-bin の外にコピーして実行した結果 (rpath / runfiles なし)
+`compare.sh` builds both directories and reports the following for each target:
+- `NEEDED` entries from `readelf -d` that mention zenohc.
+- How `nm` sees `z_config_default`. `T` means it is defined in the binary; `U` means it is
+  resolved from the `.so`. rules_go strips `.symtab`, so only `.dynsym` is visible for some
+  Go binaries; a static one then shows `(stripped, not imported)`.
+- The binary size.
+- The zenohc `.a` / `.so` passed on the link command line, from `bazel aquery` (CppLink / GoLink).
+- The result of running the binary after copying it out of `bazel-bin`, with no rpath target or
+  runfiles.
 
-1 ターゲットだけ手で見る場合:
+To check a single target by hand:
 
 ```sh
 cd after
@@ -56,7 +58,7 @@ readelf -d bazel-bin/cc_bin | grep NEEDED
 bazel aquery --include_param_files "mnemonic('CppLink', //:cc_bin)" | grep -o '[^ ]*zenohc[^ ]*\.\(a\|so\)'
 ```
 
-## 結果 (2026-11-15, Linux x86_64, Bazel 9.3.2)
+## Results (2026-11-15, Linux x86_64, Bazel 9.3.2)
 
 ### `./compare.sh` (@llvm toolchain)
 
@@ -67,7 +69,7 @@ bazel aquery --include_param_files "mnemonic('CppLink', //:cc_bin)" | grep -o '[
 | `cc_test_default`    | `libzenohc.so` | `libzenohc_static.a` ⚠️ |
 | `go_bin`             | `libzenohc.so` | `libzenohc_static.a` ✅ |
 
-### `./compare.sh --local-cc` (自動検出のホスト toolchain = /usr/bin/gcc)
+### `./compare.sh --local-cc` (auto-detected host toolchain = /usr/bin/gcc)
 
 | target               | before         | after                  |
 |----------------------|----------------|------------------------|
@@ -85,37 +87,38 @@ bazel aquery --include_param_files "mnemonic('CppLink', //:cc_bin)" | grep -o '[
 | `cc_test_default`    | `libzenohc.so` | `libzenohc_static.a` ✅ |
 | `go_bin`             | `libzenohc.so` | `libzenohc_static.a` ✅ |
 
-(`./compare.sh --dynamic_mode=off`、つまり @llvm + off の組み合わせは未実行)
+`./compare.sh --dynamic_mode=off` (the @llvm toolchain with `--dynamic_mode=off`) was not run.
 
-before の linkstatic なターゲットはすべて `NEEDED libzenohc.so` を持ち、bazel-bin の外では
-`libzenohc.so: cannot open shared object file` で起動できない。after では `NEEDED` が消え、
-`z_config_default` がバイナリ内に定義され、単体で実行できる (cc/go とも)。
+In `before`, every linkstatic target has `NEEDED libzenohc.so`, and outside `bazel-bin` it fails
+to start with `libzenohc.so: cannot open shared object file`. In `after`, the `NEEDED` entry is
+gone, `z_config_default` is defined in the binary, and both the C and Go binaries run standalone.
 
-## 気づいたこと
+## Findings
 
-1. **バグは再現する。** 1.10.1 では `--dynamic_mode` がデフォルトのままだと、`cc_binary`、
-   `cc_test(linkstatic = True)`、`go_binary` の `cdeps` のすべてが `libzenohc.so` を動的リンクする。
-   `--dynamic_mode=off` にしても `.so` のまま (static 版が存在しないため)。
-2. **PR で linkstatic な consumer は static になる。** ツールチェーンに関係なく
-   `libzenohc_static.a` がリンクされる。
-3. **「linkstatic でない `cc_test` は `.so` のまま」はツールチェーン次第。**
-   ホスト toolchain (gcc) では PR の説明どおり `.so` のまま。`@llvm` (0.8.9) toolchain では
-   `.a` になる。`@llvm` の toolchain は
-   `@rules_cc//cc/toolchains/capabilities:supports_dynamic_linker` を宣言していないため、
-   rules_cc (解決版 0.2.22) の
-   `cc/private/link/finalize_link_action.bzl` の
-   `prefer_static_libs = linking_mode == STATIC or not supports_dynamic_linker`
-   が True になり、`cc_import` に static があればそちらが選ばれる。
-   PR の `tests/BUILD.bazel` にある `z_build_shared` (`linkstatic = False`,
-   `ZENOHC_DYN_LIB`) も、Linux で `@llvm` を登録した test module では、ここでの
-   `cc_test_default` と同じ条件になる。つまり実際には static リンクされている可能性が高い
-   (test module 自体は未実行)。
-4. after の `cc_test_default` を `@llvm` toolchain で単体実行すると `libc++.so.1` が
-   見つからずに失敗する。これは toolchain の C++ runtime が動的リンクされているためで、
-   zenoh-c とは無関係。
+1. **The bug reproduces.** In 1.10.1 with the default `--dynamic_mode`, `cc_binary`,
+   `cc_test(linkstatic = True)` and `go_binary` `cdeps` all link `libzenohc.so` dynamically.
+   With `--dynamic_mode=off` they still link the `.so`, because 1.10.1 has no static library.
+2. **With the PR, linkstatic consumers link statically.** They get `libzenohc_static.a` on both
+   toolchains.
+3. **Whether a non-linkstatic `cc_test` keeps `libzenohc.so` depends on the toolchain.**
+   With the host toolchain (gcc), it keeps the `.so`, as the PR description says. With the
+   `@llvm` (0.8.9) toolchain, it links the `.a`. The reason:
+   - The `@llvm` toolchain does not declare
+     `@rules_cc//cc/toolchains/capabilities:supports_dynamic_linker`.
+   - rules_cc (0.2.22 was resolved here) computes
+     `prefer_static_libs = linking_mode == STATIC or not supports_dynamic_linker`
+     in `cc/private/link/finalize_link_action.bzl`, which is then True.
+   - So when a `cc_import` has a static library, that one is chosen.
 
-## メモ
+   The test module was not run. Still, `z_build_shared` in the PR's `tests/BUILD.bazel`
+   (`linkstatic = False`, `ZENOHC_DYN_LIB`) has the same setup as `cc_test_default` here on
+   Linux with `@llvm` registered. It is therefore probably linked statically.
+4. Run standalone with the `@llvm` toolchain, `after`'s `cc_test_default` fails because
+   `libc++.so.1` cannot be found. This comes from the toolchain's C++ runtime being linked
+   dynamically and is unrelated to zenoh-c.
 
-- `MODULE.bazel.lock` は `.gitignore` に入れている (registry の内容がブランチと共に変わるため)。
-- 初回ビルドは zenoh の Rust ビルドがあるので各ディレクトリ数分かかる。
-- 同じ output path に上書きされるので、表示されるのは最後に実行したフラグでの結果。
+## Notes
+
+- `MODULE.bazel.lock` is in `.gitignore`, because the registry content changes with the branch.
+- The first build of each directory takes a few minutes because zenoh is built from Rust source.
+- Every run writes to the same output paths, so you see the results of the last flags used.
