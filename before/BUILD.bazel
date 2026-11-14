@@ -1,0 +1,35 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+load("@rules_go//go:def.bzl", "go_binary")
+
+# cc_binary is linkstatic = True by default -> should link libzenohc.a.
+cc_binary(
+    name = "cc_bin",
+    srcs = ["main.c"],
+    deps = ["@zenoh-c//:zenoh-c"],
+)
+
+# The case from the PR title: cc_test with linkstatic = True under the
+# default --dynamic_mode -> should link libzenohc.a.
+cc_test(
+    name = "cc_test_linkstatic",
+    srcs = ["main.c"],
+    linkstatic = True,
+    deps = ["@zenoh-c//:zenoh-c"],
+)
+
+# Control: cc_test is linkstatic = False by default -> libzenohc.so is
+# expected both before and after.
+cc_test(
+    name = "cc_test_default",
+    srcs = ["main.c"],
+    deps = ["@zenoh-c//:zenoh-c"],
+)
+
+# go_binary with cgo cdeps -> the Go linker links cdeps statically, so it
+# should link libzenohc.a.
+go_binary(
+    name = "go_bin",
+    srcs = ["main.go"],
+    cdeps = ["@zenoh-c//:zenoh-c"],
+    cgo = True,
+)

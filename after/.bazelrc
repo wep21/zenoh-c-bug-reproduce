@@ -1,0 +1,6 @@
+# after: zenoh-c 1.10.1.bcr.1 from the PR branch of
+# https://github.com/bazelbuild/bazel-central-registry/pull/11768
+# (not yet in the BCR). The PR registry comes first; everything else falls
+# through to the BCR. Passing --registry drops the default, so list BCR too.
+common --registry=https://raw.githubusercontent.com/asymingt/bazel-central-registry/refs/heads/asymingt/fix-zenoh-dynamic-linking/
+common --registry=https://bcr.bazel.build/
